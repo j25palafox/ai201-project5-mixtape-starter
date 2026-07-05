@@ -422,3 +422,7 @@ The full streak test suite passed with:
 I also verified that the related streak behaviors still passed: new users start at 1, consecutive-day listens increment, same-day listens do not double count, and skipped days reset the streak.
 
 ---
+
+## Git commits log
+
+![Git log of commits](resources/images/git-log-screenshot.png)
