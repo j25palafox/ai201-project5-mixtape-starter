@@ -343,3 +343,82 @@ To check for side effects, I re-ran the reproduction script and confirmed that n
 This verified that removing the join did not break the expected search behavior for title and artist queries.
 
 ---
+
+## Bug fix 3: Issue 1 - My listening streak keeps resetting
+
+### 2. How you reproduced it
+
+I reproduced this bug using the existing streak test suite.
+
+I ran:
+
+`pytest tests/test_streaks.py -vv`
+
+Before the fix, four streak tests passed, but `test_streak_increments_on_sunday` failed. The test set a user's streak by calling `update_listening_streak()` with Saturday, June 15, 2024, then called it again with Sunday, June 16, 2024.
+
+The expected result was that the streak should increment from `1` to `2`, because the user listened on consecutive days. Instead, the assertion failed because `u.listening_streak` was still `1`.
+
+This confirmed the bug: listening on Sunday after listening on Saturday reset the streak instead of continuing it.
+
+### 3. How you found the root cause
+
+I started from the user-facing streak route in `routes/users.py`. The `streak()` route calls `get_streak(user_id)`, which only reads `user.listening_streak` from the `User` model. That told me the bug probably was not in the route that displays the streak.
+
+Next, I looked for where the streak value is updated. In `routes/songs.py`, I found the `POST /songs/<song_id>/listen` route. That route calls `record_listening_event(user_id, song_id)`. In `services/streak_service.py`, `record_listening_event()` creates a `ListeningEvent`, then calls `update_listening_streak(user, now)`.
+
+That led me to `update_listening_streak()`, which contained the actual streak logic. The suspicious line was:
+
+`elif days_since_last == 1 and today.weekday() != 6:`
+
+That made me confident I had found the root cause because the failing test was specifically about listening on Sunday, and Python's `weekday()` returns `6` for Sunday.
+
+### 4. The root cause
+
+The root cause was an unnecessary Sunday exclusion in `update_listening_streak()`.
+
+The function already calculated:
+
+`days_since_last = (today - last_date).days`
+
+That value is enough to decide whether the user listened today, yesterday, or after skipping days.
+
+However, the code only incremented the streak when:
+
+`days_since_last == 1 and today.weekday() != 6`
+
+Since Python's `weekday()` returns `6` for Sunday, a user who listened on Saturday and then listened again on Sunday had `days_since_last == 1`, but still failed the condition. The code then fell into the `else` branch and reset the streak to `1`.
+
+This contradicted the function's own docstring, which says that if the user listened yesterday, the streak should increment.
+
+### 5. Your fix and side-effect check
+
+I removed the weekday condition and changed the logic so the streak increments whenever `days_since_last == 1`.
+
+The fixed logic is:
+
+```python
+if days_since_last == 0:
+    return
+elif days_since_last == 1:
+    user.listening_streak += 1
+else:
+    user.listening_streak = 1
+```
+
+This fixes the root cause because the streak rule depends only on the number of days since the user's last listen, not on the day of the week.
+
+After the fix, I reran:
+
+`pytest tests/test_streaks.py -vv`
+
+All five streak tests passed, including:
+
+`tests/test_streaks.py::test_streak_increments_on_sunday PASSED`
+
+The full streak test suite passed with:
+
+`5 passed in 0.25s`
+
+I also verified that the related streak behaviors still passed: new users start at 1, consecutive-day listens increment, same-day listens do not double count, and skipped days reset the streak.
+
+---
