@@ -271,3 +271,75 @@ This fixes the bug because the service now converts every queried `Song` object 
 To check for side effects, I re-ran the same curl request for the seeded "Late Night Vibes" playlist and confirmed that the endpoint returned all 7 songs instead of 6. I also ran `pytest tests/test_playlists.py -vv` to verify the playlist tests still passed and that the playlist response behavior was not broken by the change.
 
 ---
+
+## Bug fix 2: Issue 3 - The same song keeps showing up twice in search
+
+### 2. How you reproduced it
+
+I reproduced the data condition behind this bug by writing and running a script at `scripts/reproduce_issue_3_search_duplicates.py`.
+
+The script loaded all seeded songs from the database and printed each song's relevant search information, including title, artist, genre, and tags. Then it searched each seeded song by both title and artist using the real `search_songs()` service function.
+
+Because Issue 3 is conditional and was not visibly reproduced in the user-facing search_songs() output in my environment, I also compared the normal `search_songs()` result with the raw joined rows produced by the current query. This mattered because the search service joins through `song_tags`, and songs with multiple tags can produce multiple database rows.
+
+The script showed that multi-tag songs produced repeated raw joined rows. For example:
+
+* `After Hours` has 3 tags and the raw joined query returned 3 rows for the same song ID.
+* `Crown Heights Anthem` has 3 tags and the raw joined query returned 3 rows for the same song ID.
+* `Frequencies` has 3 tags and the raw joined query returned 3 rows for the same song ID.
+* `Harlem Renaissance` has 3 tags and the raw joined query returned 3 rows for the same song ID.
+* `Lagos to London` has 3 tags and the raw joined query returned 3 rows for the same song ID.
+
+In my current environment, `search_songs()` itself returned one result per song because SQLAlchemy collapsed duplicate `Song` entities by primary key. However, the raw joined query confirmed the risky duplicate-producing condition: songs with multiple tags were being multiplied by the unnecessary join even though search only filters by title and artist.
+
+### 3. How you found the root cause
+
+I started from the search behavior described in Issue 3, then traced the feature to `services/search_service.py`.
+
+In `search_songs(query)`, I saw that the service queried `Song` objects and used an `outerjoin` through the `song_tags` table:
+
+`outerjoin(song_tags, Song.id == song_tags.c.song_id)`
+
+That stood out because the search filter only checks `Song.title` and `Song.artist`. The query does not filter by tag name, and the returned song dictionaries already include tags through the `Song.tags` relationship and `song.to_dict()`.
+
+To verify that the join was the suspicious part, I wrote a reproduction script that compared two things: the normal `search_songs()` output and the raw joined rows underneath. The script confirmed that songs with three tags produced three raw joined rows for the same song ID. That made me confident the root cause was not the title/artist filter itself, but the unnecessary join through the many-to-many tag table.
+
+### 4. The root cause
+
+The root cause was an unnecessary join in `services/search_service.py`.
+
+The `search_songs()` function searched songs by title or artist, but it also joined through the `song_tags` table:
+
+`outerjoin(song_tags, Song.id == song_tags.c.song_id)`
+
+This join was not needed for the search because the filter only used `Song.title` and `Song.artist`:
+
+`Song.title.ilike(f"%{query}%")`
+
+`Song.artist.ilike(f"%{query}%")`
+
+The problem with joining through `song_tags` is that `song_tags` is a many-to-many association table. A song with three tags has three matching rows in that table. So when the query joins songs to tags, one logical song can become multiple raw database rows.
+
+In my script output, this happened for seeded songs such as `After Hours`, `Crown Heights Anthem`, `Frequencies`, `Harlem Renaissance`, and `Lagos to London`. Each of those songs had three tags, and each produced three raw joined rows for the same song ID.
+
+Even though SQLAlchemy collapsed the duplicate `Song` objects in my current `search_songs()` result, the query itself was still doing unnecessary row multiplication. That made the function more fragile and matched the conditional nature of Issue 3: songs with multiple tags are the data condition that can produce duplicate search rows.
+
+### 5. Your fix and side-effect check
+
+I removed the unnecessary `outerjoin(song_tags, Song.id == song_tags.c.song_id)` from `search_songs()`.
+
+I changed the query from joining through `song_tags` to querying `Song` directly and filtering only by title or artist:
+
+`db.session.query(Song).filter(...)`
+
+I also cleaned up the unused imports in `services/search_service.py` by removing `Tag` and `song_tags`, leaving only the `Song` import from `models`.
+
+This fixes the root cause because the search query no longer multiplies songs by their number of tags. Each song is queried as a song, and tags are still included later when each result is converted with `song.to_dict()`.
+
+To check for side effects, I re-ran the reproduction script and confirmed that normal search results still returned the expected songs. I also ran the search tests with:
+
+`pytest tests/test_search.py -vv`
+
+This verified that removing the join did not break the expected search behavior for title and artist queries.
+
+---
