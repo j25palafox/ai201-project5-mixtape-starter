@@ -2,7 +2,15 @@
 
 ## AI Usage
 
-I used AI during the orientation phase to help summarize files, explain unfamiliar functions, and trace call chains through the app. I verified the explanation by reading the code myself and comparing it to the actual routes, services, models, and tests.
+I used AI as a debugging partner during codebase navigation and root cause analysis, but I did not use it as a substitute for reading the code myself. I used AI mainly to explain unfamiliar code, help trace call chains, and check whether my written explanations matched what the code was actually doing.
+
+One specific use was during the playlist bug. After reproducing that the "Late Night Vibes" playlist contained 7 songs in the database but only returned 6 through the `/playlists/<playlist_id>/songs` route, I asked AI to help me explain the data flow from `routes/playlists.py` into `services/playlist_service.py`. The AI helped me understand that the route only formatted the JSON response and that the real playlist logic lived in `get_playlist_songs()`. I then verified this myself by reading the route, reading the service function, and confirming that the exact root cause was the `songs[:-1]` slice, which removed the final song from every non-empty playlist.
+
+A second specific use was during the search duplicate bug. I asked AI to help me reason through why a song with multiple tags might appear more than once in search results. The useful explanation was that `search_songs()` joined through the `song_tags` table even though the docstring said search should only match song title or artist name. That helped me understand why a multi-tag song could produce duplicate joined rows. However, I also verified the explanation against the actual code and seed data myself. I noticed that in my local environment, SQLAlchemy was already collapsing duplicate `Song` objects in the returned ORM results, so the bug did not reproduce as clearly through `search_songs()` as expected. That made this case a course-correction: I still removed the unnecessary join because it did not match the function's documented contract, but I documented that my evidence was weaker than the playlist and streak bugs because the duplicate behavior was conditional.
+
+A third specific use was during the streak bug. I asked AI to explain the difference between Python date methods like `weekday()` and `isoweekday()` and to help me think through why a Saturday-to-Sunday listening streak might not increment correctly. I then checked the actual test case in `tests/test_streaks.py` and traced the route/service/model path myself. This helped me connect the failing Sunday test to the specific date comparison in the streak logic instead of writing a vague explanation like "the streak code handled Sundays wrong."
+
+I also used AI to improve the wording of my root cause analysis entries after I had already reproduced the bugs and read the relevant files. For example, I asked it to help turn my rough notes into clearer explanations that named the exact file, function, condition, and symptom. I verified the final wording by comparing it against the actual routes, services, models, tests, seed data, and command output I used during debugging.
 
 ---
 
